@@ -1,0 +1,94 @@
+// Adapter CSFloat.
+// Dokumentacja: https://docs.csfloat.com/#get-all-listings
+// Ceny zwracane są w CENTACH USD. Filtrujemy po market_hash_name
+// i sortujemy rosnąco, by uzyskać najtańszą ofertę typu buy_now.
+
+import { cached } from "@/lib/cache";
+import {
+  CSFLOAT_API_KEY,
+  DEFAULT_CURRENCY,
+  USD_TO_DEFAULT_FX,
+} from "@/lib/config";
+import type { MarketAdapter, MarketPrice } from "@/lib/types";
+
+const LISTING_TTL_MS = 60 * 1000; // 1 minuta na zapytanie o konkretny item
+
+interface CsfloatListing {
+  id: string;
+  type: string;
+  price: number; // w centach USD
+  state: string;
+  item: {
+    market_hash_name: string;
+  };
+}
+
+async function fetchCheapestListing(
+  marketHashName: string,
+): Promise<CsfloatListing | null> {
+  const key = `csfloat:cheapest:${marketHashName}`;
+  return cached(key, LISTING_TTL_MS, async () => {
+    const params = new URLSearchParams({
+      market_hash_name: marketHashName,
+      sort_by: "lowest_price",
+      type: "buy_now",
+      limit: "1",
+    });
+    const headers: Record<string, string> = {};
+    if (CSFLOAT_API_KEY) headers["Authorization"] = CSFLOAT_API_KEY;
+
+    const res = await fetch(`https://csfloat.com/api/v1/listings?${params}`, {
+      headers,
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`CSFloat API ${res.status}`);
+
+    const data = await res.json();
+    // API może zwrócić tablicę lub obiekt { data: [...] } zależnie od wersji.
+    const list: CsfloatListing[] = Array.isArray(data) ? data : data?.data ?? [];
+    return list.length > 0 ? list[0] : null;
+  });
+}
+
+export const csfloatAdapter: MarketAdapter = {
+  id: "csfloat",
+  name: "CSFloat",
+  async getCheapest(marketHashName: string): Promise<MarketPrice> {
+    try {
+      const listing = await fetchCheapestListing(marketHashName);
+      if (!listing) {
+        return {
+          marketId: "csfloat",
+          marketName: "CSFloat",
+          price: null,
+          currency: "USD",
+          normalizedPrice: null,
+          quantity: 0,
+          url: null,
+          ok: true,
+        };
+      }
+      const priceUsd = listing.price / 100; // centy -> dolary
+      return {
+        marketId: "csfloat",
+        marketName: "CSFloat",
+        price: priceUsd,
+        currency: "USD",
+        normalizedPrice:
+          DEFAULT_CURRENCY === "USD" ? priceUsd : priceUsd * USD_TO_DEFAULT_FX,
+        url: `https://csfloat.com/item/${listing.id}`,
+        ok: true,
+      };
+    } catch (e) {
+      return {
+        marketId: "csfloat",
+        marketName: "CSFloat",
+        price: null,
+        currency: "USD",
+        normalizedPrice: null,
+        ok: false,
+        error: e instanceof Error ? e.message : "Unknown error",
+      };
+    }
+  },
+};
