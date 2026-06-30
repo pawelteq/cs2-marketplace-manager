@@ -22,16 +22,29 @@ export async function GET(request: Request) {
     ? (sortParam as ArbitrageSort)
     : "spreadPct";
 
-  try {
+    try {
+    const priceMode =
+      searchParams.get("priceMode") === "min" ? "min" : "avg";
     const result = await queryArbitrage({
       sort,
       sortDir: searchParams.get("sortDir") === "asc" ? "asc" : "desc",
       minSpreadPct: parseFilterInt(searchParams.get("minSpreadPct"), 0),
-      minQuantity: parseFilterInt(searchParams.get("minQuantity"), 5),
+      minSkinportQty: parseFilterInt(
+        searchParams.get("minSkinportQty") ??
+          searchParams.get("minQuantity"),
+        5,
+      ),
+      minCsfloatQty: parseFilterInt(
+        searchParams.get("minCsfloatQty") ??
+          searchParams.get("minQuantity"),
+        5,
+      ),
       onlyBoth: searchParams.get("onlyBoth") !== "false",
       search: searchParams.get("search") || "",
       page: Number(searchParams.get("page") || "1"),
       limit: Number(searchParams.get("limit") || "50"),
+      priceMode,
+      avgSampleSize: parseFilterInt(searchParams.get("avgSampleSize"), 5),
     });
 
     return NextResponse.json(result);

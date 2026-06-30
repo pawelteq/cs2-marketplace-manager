@@ -19,11 +19,35 @@ import { invalidateArbitrageSnapshot } from "@/lib/sync/invalidate";
 const TEN_MIN_MS = 10 * 60 * 1000;
 const SYNC_INTERVAL_MS = TEN_MIN_MS;
 const BACKOFF_MS = TEN_MIN_MS;
+const MIN_BACKOFF_MS = 60 * 1000;
 
-let skinportRetryAfter = 0;
-let lastSkinportWarning: string | null = null;
-let syncInflight = false;
-let metaLoaded = false;
+function gState() {
+  return skinportGlobals();
+}
+
+function getRetryAfter(): number {
+  return gState().skinportRetryAfter ?? 0;
+}
+
+function setRetryAfter(value: number): void {
+  gState().skinportRetryAfter = value;
+}
+
+function getLastWarning(): string | null {
+  return gState().lastSkinportWarning ?? null;
+}
+
+function setLastWarning(value: string | null): void {
+  gState().lastSkinportWarning = value;
+}
+
+function isSyncInflight(): boolean {
+  return !!gState().syncInflight;
+}
+
+function setSyncInflight(value: boolean): void {
+  gState().syncInflight = value;
+}
 
 export interface SkinportSyncStatus {
   catalogItems: number;
@@ -37,40 +61,65 @@ export interface SkinportSyncStatus {
   workerStarted: boolean;
 }
 
-async function loadMetaIntoMemory(): Promise<void> {
-  if (metaLoaded) return;
+async function loadMetaIntoMemory(force = false): Promise<void> {
+  const g = gState();
+  if (g.metaLoaded && !force) return;
   const meta = await readSkinportMeta();
   const now = Date.now();
   if (meta.retryAfter > now + BACKOFF_MS) {
-    skinportRetryAfter = now + BACKOFF_MS;
-    await writeSkinportMeta({ retryAfter: skinportRetryAfter });
+    setRetryAfter(now + BACKOFF_MS);
+    await writeSkinportMeta({ retryAfter: getRetryAfter() });
   } else {
-    skinportRetryAfter = meta.retryAfter;
+    setRetryAfter(meta.retryAfter);
   }
-  metaLoaded = true;
+  g.metaLoaded = true;
 }
 
 export function isSkinportBackoffActive(): boolean {
-  return Date.now() < skinportRetryAfter;
+  return Date.now() < getRetryAfter();
 }
 
 export function getSkinportStatusWarning(): string | null {
-  return lastSkinportWarning;
+  return getLastWarning();
+}
+
+function clearRetryTimer(): void {
+  const g = gState();
+  if (g.retryTimer) {
+    clearTimeout(g.retryTimer);
+    g.retryTimer = undefined;
+  }
+}
+
+/** Po 429 retry za Retry-After (np. 2 min), nie dopiero przy interwale 10 min. */
+function scheduleRetrySync(currency: string): void {
+  const g = gState();
+  clearRetryTimer();
+
+  const delay = getRetryAfter() - Date.now();
+  if (delay <= 0) return;
+
+  g.retryTimer = setTimeout(() => {
+    g.retryTimer = undefined;
+    void syncSkinportCatalog(currency);
+  }, delay + 500);
 }
 
 export async function getSkinportSyncStatus(
   currency: string = DEFAULT_CURRENCY,
 ): Promise<SkinportSyncStatus> {
-  await loadMetaIntoMemory();
+  await loadMetaIntoMemory(true);
+  if (getCatalogItemCount(currency) === 0) {
+    await hydrateCatalogFromDisk(currency);
+  }
   const meta = await readSkinportMeta();
-  const retryInSec = Math.max(
-    0,
-    Math.ceil((skinportRetryAfter - Date.now()) / 1000),
-  );
+  const retryAfter = Math.max(getRetryAfter(), meta.retryAfter);
+  setRetryAfter(retryAfter);
+  const retryInSec = Math.max(0, Math.ceil((retryAfter - Date.now()) / 1000));
   return {
     catalogItems: getCatalogItemCount(currency),
-    backoffActive: isSkinportBackoffActive(),
-    retryAfter: skinportRetryAfter > Date.now() ? skinportRetryAfter : null,
+    backoffActive: retryAfter > Date.now(),
+    retryAfter: retryAfter > Date.now() ? retryAfter : null,
     retryInSec,
     lastSyncSuccess: meta.lastSyncSuccess,
     lastSyncAttempt: meta.lastSyncAttempt,
@@ -84,23 +133,32 @@ function computeBackoffMs(retryAfterHeader: string | null): number {
   if (retryAfterHeader) {
     const sec = Number(retryAfterHeader);
     if (Number.isFinite(sec) && sec > 0) {
-      return Math.min(sec * 1000, BACKOFF_MS);
+      return Math.min(Math.max(sec * 1000, MIN_BACKOFF_MS), BACKOFF_MS);
     }
   }
   return BACKOFF_MS;
 }
 
-async function record429(retryAfterHeader: string | null): Promise<void> {
+async function record429(
+  retryAfterHeader: string | null,
+  currency: string,
+): Promise<void> {
   const meta = await readSkinportMeta();
   const backoffMs = computeBackoffMs(retryAfterHeader);
-  skinportRetryAfter = Date.now() + backoffMs;
+  setRetryAfter(Date.now() + backoffMs);
   await writeSkinportMeta({
-    retryAfter: skinportRetryAfter,
+    retryAfter: getRetryAfter(),
     consecutiveFailures: meta.consecutiveFailures + 1,
     lastError: "Skinport API 429",
     lastSyncAttempt: Date.now(),
   });
-  lastSkinportWarning = `Skinport API 429 — kolejna próba za ${Math.ceil(backoffMs / 60000)} min.`;
+  const retryInSec = Math.ceil(backoffMs / 1000);
+  const retryLabel =
+    retryInSec >= 60
+      ? `${Math.ceil(retryInSec / 60)} min`
+      : `${retryInSec} s`;
+  setLastWarning(`Skinport API 429 — kolejna próba za ${retryLabel}.`);
+  scheduleRetrySync(currency);
 }
 
 async function fetchFromSkinportApi(
@@ -117,7 +175,7 @@ async function fetchFromSkinportApi(
   });
 
   if (res.status === 429) {
-    await record429(res.headers.get("Retry-After"));
+    await record429(res.headers.get("Retry-After"), currency);
     throw new Error("Skinport API 429");
   }
   if (!res.ok) {
@@ -128,8 +186,9 @@ async function fetchFromSkinportApi(
     throw new Error(`Skinport API ${res.status}`);
   }
 
-  skinportRetryAfter = 0;
-  lastSkinportWarning = null;
+  setRetryAfter(0);
+  setLastWarning(null);
+  clearRetryTimer();
   await writeSkinportMeta({
     retryAfter: 0,
     consecutiveFailures: 0,
@@ -145,43 +204,60 @@ export async function syncSkinportCatalog(
   currency: string = DEFAULT_CURRENCY,
   force = false,
 ): Promise<boolean> {
-  await loadMetaIntoMemory();
+  await loadMetaIntoMemory(true);
 
-  if (syncInflight) return getCatalogItemCount(currency) > 0;
+  if (isSyncInflight()) return getCatalogItemCount(currency) > 0;
 
   if (!force && isSkinportBackoffActive()) {
-    lastSkinportWarning =
+    const retryInSec = Math.max(
+      0,
+      Math.ceil((getRetryAfter() - Date.now()) / 1000),
+    );
+    const retryLabel =
+      retryInSec >= 60
+        ? `${Math.ceil(retryInSec / 60)} min`
+        : `${retryInSec} s`;
+    setLastWarning(
       getCatalogItemCount(currency) > 0
         ? "Skinport REST zablokowany (429) — katalog z cache/WebSocket."
-        : `Skinport REST zablokowany (429) — kolejna próba za ${Math.ceil((skinportRetryAfter - Date.now()) / 60000)} min. WebSocket nadal nasłuchuje.`;
+        : `Skinport REST zablokowany (429) — kolejna próba za ${retryLabel}. WebSocket nadal nasłuchuje.`,
+    );
+    scheduleRetrySync(currency);
     return getCatalogItemCount(currency) > 0;
   }
 
-  syncInflight = true;
+  setSyncInflight(true);
   try {
     const items = await fetchFromSkinportApi(currency);
     replaceCatalog(items, currency);
     await writeDiskCatalog(currency, items);
     invalidateArbitrageSnapshot();
-    lastSkinportWarning = null;
+    setLastWarning(null);
+    console.info(
+      `[skinport] sync OK — ${items.length.toLocaleString()} itemów`,
+    );
     return true;
   } catch (e) {
     if (getCatalogItemCount(currency) === 0) {
       await hydrateCatalogFromDisk(currency);
     }
-    if (!lastSkinportWarning) {
-      lastSkinportWarning =
-        e instanceof Error ? e.message : "Skinport niedostępny";
+    if (!getLastWarning()) {
+      setLastWarning(e instanceof Error ? e.message : "Skinport niedostępny");
     }
     return getCatalogItemCount(currency) > 0;
   } finally {
-    syncInflight = false;
+    setSyncInflight(false);
   }
 }
 
 async function bootstrap(currency: string): Promise<void> {
   ensureCatalogInitialized(currency);
   await hydrateCatalogFromDisk(currency);
+  await loadMetaIntoMemory(true);
+  if (isSkinportBackoffActive()) {
+    scheduleRetrySync(currency);
+    return;
+  }
   await syncSkinportCatalog(currency);
 }
 

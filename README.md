@@ -24,8 +24,8 @@ npm run dev                 # http://localhost:3000
 
 | Zmienna | Opis |
 | --- | --- |
-| `NEXT_PUBLIC_DEFAULT_CURRENCY` | Waluta porównania (EUR, USD, PLN…). Skinport jest odpytywany w tej walucie. |
-| `USD_TO_DEFAULT_FX` | Kurs USD → waluta domyślna. CSFloat podaje ceny w USD i są przeliczane tym kursem. |
+| `NEXT_PUBLIC_DEFAULT_CURRENCY` | Waluta porównania (domyślnie **PLN**). Skinport sync w tej walucie. |
+| `USD_TO_DEFAULT_FX` | Kurs USD → waluta domyślna (np. **3.85** dla PLN). CSFloat podaje ceny w USD. |
 | `CSFLOAT_API_KEY` | Opcjonalny. Niewymagany do odczytu listingów; przyda się przy akcjach (listowanie). |
 
 ## Architektura
@@ -56,6 +56,15 @@ lib/
 instrumentation.ts      # start worker Skinport przy starcie serwera
 scripts/sync-skinport.ts # ręczny sync: npm run sync:skinport
 ```
+
+### Metody ceny (filtry UI)
+
+| Tryb | Skinport | CSFloat |
+| --- | --- | --- |
+| **Najtańsza sztuka** | `min_price` z bulk API | min z price-list |
+| **Średnia N najtańszych** | estymacja min + mediana API | średnia z N listingów buy_now |
+
+Po zmianie waluty na PLN uruchom ponownie `npm run sync:skinport`, aby przeładować katalog Skinport.
 
 ### Odświeżanie danych
 

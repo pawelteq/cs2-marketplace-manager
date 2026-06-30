@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ArbitrageRow, ArbitrageSnapshot, ComparisonResult, SearchHit } from "@/lib/types";
-import { filterArbitrageSnapshot, type ArbitragePage } from "@/lib/sync/arbitrage-filter";
+import { filterArbitrageSnapshot, listCsfloatAvgCandidates, type ArbitragePage } from "@/lib/sync/arbitrage-filter";
+import type { PriceMode } from "@/lib/pricing";
 
 const CURRENCY = process.env.NEXT_PUBLIC_DEFAULT_CURRENCY || "EUR";
 const CLIENT_REFRESH_MS = 60_000;
@@ -35,8 +36,11 @@ function fmtTime(iso: string): string {
 interface AppliedArbFilters {
   search: string;
   minSpreadPct: string;
-  minQuantity: string;
+  minSkinportQty: string;
+  minCsfloatQty: string;
   onlyBoth: boolean;
+  priceMode: PriceMode;
+  avgSampleSize: string;
 }
 
 function parseFilterInt(value: string, fallback: number): number {
@@ -56,14 +60,23 @@ export default function Home() {
 
   const [arbSearch, setArbSearch] = useState("");
   const [minSpreadPct, setMinSpreadPct] = useState("5");
-  const [minQuantity, setMinQuantity] = useState("5");
+  const [minSkinportQty, setMinSkinportQty] = useState("5");
+  const [minCsfloatQty, setMinCsfloatQty] = useState("5");
   const [onlyBoth, setOnlyBoth] = useState(true);
+  const [priceMode, setPriceMode] = useState<PriceMode>("avg");
+  const [avgSampleSize, setAvgSampleSize] = useState("5");
+  const [filtersExpanded, setFiltersExpanded] = useState(true);
   const [applied, setApplied] = useState<AppliedArbFilters>({
     search: "",
     minSpreadPct: "5",
-    minQuantity: "5",
+    minSkinportQty: "5",
+    minCsfloatQty: "5",
     onlyBoth: true,
+    priceMode: "avg",
+    avgSampleSize: "5",
   });
+  const [csfloatAvgs, setCsfloatAvgs] = useState<Record<string, number>>({});
+  const [csfloatAvgsLoading, setCsfloatAvgsLoading] = useState(false);
   const [arbPage, setArbPage] = useState(1);
   const [snapshot, setSnapshot] = useState<
     (ArbitrageSnapshot & { nextRefreshInSec: number }) | null
@@ -81,17 +94,24 @@ export default function Home() {
   const filtersDirty =
     arbSearch !== applied.search ||
     minSpreadPct !== applied.minSpreadPct ||
-    minQuantity !== applied.minQuantity ||
-    onlyBoth !== applied.onlyBoth;
+    minSkinportQty !== applied.minSkinportQty ||
+    minCsfloatQty !== applied.minCsfloatQty ||
+    onlyBoth !== applied.onlyBoth ||
+    priceMode !== applied.priceMode ||
+    avgSampleSize !== applied.avgSampleSize;
 
   function applyFilters() {
     setApplied({
       search: arbSearch,
       minSpreadPct,
-      minQuantity,
+      minSkinportQty,
+      minCsfloatQty,
       onlyBoth,
+      priceMode,
+      avgSampleSize,
     });
     setArbPage(1);
+    setCsfloatAvgs({});
   }
 
   const loadSnapshot = useCallback(async () => {
@@ -118,15 +138,20 @@ export default function Home() {
         sort: "spreadPct",
         sortDir: "desc",
         minSpreadPct: parseFilterInt(applied.minSpreadPct, 0),
-        minQuantity: parseFilterInt(applied.minQuantity, 5),
+        minSkinportQty: parseFilterInt(applied.minSkinportQty, 5),
+        minCsfloatQty: parseFilterInt(applied.minCsfloatQty, 5),
         onlyBoth: applied.onlyBoth,
         search: applied.search,
         page: arbPage,
         limit: 50,
+        priceMode: applied.priceMode,
+        avgSampleSize: parseFilterInt(applied.avgSampleSize, 5),
+        csfloatAvgByName:
+          applied.priceMode === "avg" ? csfloatAvgs : undefined,
       },
       snapshot.nextRefreshInSec,
     );
-  }, [snapshot, applied, arbPage]);
+  }, [snapshot, applied, arbPage, csfloatAvgs]);
 
   useEffect(() => {
     if (arbData?.warnings?.length) {
@@ -135,6 +160,58 @@ export default function Home() {
       setArbWarning(null);
     }
   }, [arbData?.warnings]);
+
+  useEffect(() => {
+    if (!snapshot || applied.priceMode !== "avg") {
+      setCsfloatAvgsLoading(false);
+      return;
+    }
+
+    const sampleSize = parseFilterInt(applied.avgSampleSize, 5);
+    const names = listCsfloatAvgCandidates(snapshot, {
+      minSkinportQty: parseFilterInt(applied.minSkinportQty, 5),
+      minCsfloatQty: parseFilterInt(applied.minCsfloatQty, 5),
+      onlyBoth: applied.onlyBoth,
+      search: applied.search,
+    });
+
+    if (names.length === 0) {
+      setCsfloatAvgs({});
+      setCsfloatAvgsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setCsfloatAvgsLoading(true);
+
+    (async () => {
+      const merged: Record<string, number> = {};
+      const chunkSize = 80;
+      for (let i = 0; i < names.length; i += chunkSize) {
+        if (cancelled) return;
+        const chunk = names.slice(i, i + chunkSize);
+        try {
+          const res = await fetch("/api/csfloat/avg-prices", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ names: chunk, sampleSize }),
+          });
+          const data = await res.json();
+          if (res.ok && data.prices) {
+            Object.assign(merged, data.prices);
+            if (!cancelled) setCsfloatAvgs({ ...merged });
+          }
+        } catch {
+          /* partial results ok */
+        }
+      }
+      if (!cancelled) setCsfloatAvgsLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [snapshot, applied]);
 
   useEffect(() => {
     loadSnapshot();
@@ -254,67 +331,143 @@ export default function Home() {
       </p>
 
       <section className="arb-section">
-        <div className="arb-toolbar">
-          <input
-            type="text"
-            className="arb-search"
-            placeholder="Filtruj po nazwie skina…"
-            value={arbSearch}
-            onChange={(e) => setArbSearch(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") applyFilters();
-            }}
-          />
-          <label className="filter-field">
-            Min. spread %
-            <input
-              type="number"
-              min="0"
-              step="1"
-              value={minSpreadPct}
-              onChange={(e) => {
-                setMinSpreadPct(e.target.value);
-              }}
-            />
-          </label>
-          <label className="filter-field">
-            Min. sztuk (oba markety)
-            <input
-              type="number"
-              min="1"
-              step="1"
-              value={minQuantity}
-              onChange={(e) => {
-                setMinQuantity(e.target.value);
-              }}
-            />
-          </label>
-          <label className="checkbox-field">
-            <input
-              type="checkbox"
-              checked={onlyBoth}
-              onChange={(e) => setOnlyBoth(e.target.checked)}
-            />
-            Tylko na obu marketach
-          </label>
-          <button
-            type="button"
-            className={`apply-btn ${filtersDirty ? "apply-btn-dirty" : ""}`}
-            onClick={applyFilters}
-          >
-            Zastosuj filtry
-          </button>
+        <div className="filters-panel">
+          <div className="filters-panel-head">
+            <h2 className="filters-title">Filtry arbitrażu</h2>
+            <button
+              type="button"
+              className="filters-toggle"
+              onClick={() => setFiltersExpanded((v) => !v)}
+            >
+              {filtersExpanded ? "Zwiń" : "Rozwiń"}
+            </button>
+          </div>
+
+          {filtersExpanded && (
+            <div className="filters-grid">
+              <label className="filter-field filter-field-wide">
+                Nazwa itemu
+                <input
+                  type="text"
+                  className="filter-input"
+                  placeholder="np. Chroma 2 Case"
+                  value={arbSearch}
+                  onChange={(e) => setArbSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") applyFilters();
+                  }}
+                />
+              </label>
+
+              <fieldset className="filter-group">
+                <legend>Ilość ofert (min.)</legend>
+                <label className="filter-field">
+                  Skinport
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    className="filter-input filter-input-narrow"
+                    value={minSkinportQty}
+                    onChange={(e) => setMinSkinportQty(e.target.value)}
+                  />
+                </label>
+                <label className="filter-field">
+                  CSFloat
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    className="filter-input filter-input-narrow"
+                    value={minCsfloatQty}
+                    onChange={(e) => setMinCsfloatQty(e.target.value)}
+                  />
+                </label>
+              </fieldset>
+
+              <fieldset className="filter-group">
+                <legend>Metoda ceny</legend>
+                <label className="filter-field">
+                  Tryb
+                  <select
+                    className="filter-input"
+                    value={priceMode}
+                    onChange={(e) =>
+                      setPriceMode(e.target.value as PriceMode)
+                    }
+                  >
+                    <option value="avg">Średnia N najtańszych</option>
+                    <option value="min">Najtańsza sztuka</option>
+                  </select>
+                </label>
+                <label className="filter-field">
+                  N (1–20)
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    step="1"
+                    className="filter-input filter-input-narrow"
+                    value={avgSampleSize}
+                    disabled={priceMode === "min"}
+                    onChange={(e) => setAvgSampleSize(e.target.value)}
+                  />
+                </label>
+              </fieldset>
+
+              <fieldset className="filter-group">
+                <legend>Spread</legend>
+                <label className="filter-field">
+                  Min. spread %
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    className="filter-input filter-input-narrow"
+                    value={minSpreadPct}
+                    onChange={(e) => setMinSpreadPct(e.target.value)}
+                  />
+                </label>
+                <label className="checkbox-field filter-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={onlyBoth}
+                    onChange={(e) => setOnlyBoth(e.target.checked)}
+                  />
+                  Tylko na obu marketach
+                </label>
+              </fieldset>
+            </div>
+          )}
+
+          <div className="filters-actions">
+            <button
+              type="button"
+              className={`apply-btn ${filtersDirty ? "apply-btn-dirty" : ""}`}
+              onClick={applyFilters}
+            >
+              Zastosuj filtry
+            </button>
+            {csfloatAvgsLoading && applied.priceMode === "avg" && (
+              <span className="muted filters-hint">
+                Pobieram średnie CSFloat z listingów…
+              </span>
+            )}
+            {filtersDirty && (
+              <span className="muted filters-hint">Niezastosowane zmiany</span>
+            )}
+          </div>
         </div>
 
         <div className="arb-meta">
           {arbData && (
             <>
               <span>
-                {arbData.total} wyników · min. {arbData.appliedFilters.minQuantity}{" "}
-                szt. · spread ≥ {arbData.appliedFilters.minSpreadPct}%
-                {filtersDirty && (
-                  <span className="muted"> · niezastosowane zmiany</span>
-                )}
+                {arbData.total} wyników · ceny:{" "}
+                <strong>{arbData.appliedFilters.priceModeLabel}</strong> · SP ≥
+                {arbData.appliedFilters.minSkinportQty} szt. · CF ≥
+                {arbData.appliedFilters.minCsfloatQty} szt. · spread ≥
+                {arbData.appliedFilters.minSpreadPct}%
               </span>
               <span>
                 Ostatnia sync: <strong>{fmtTime(arbData.lastUpdatedAt)}</strong>
@@ -334,9 +487,19 @@ export default function Home() {
         )}
         {spStatus && spStatus.catalogItems === 0 && spStatus.backoffActive && (
           <div className="spinner warn">
-            Skinport REST zablokowany (429). Kolejna próba sync za ~
-            {Math.max(1, Math.ceil(spStatus.retryInSec / 60))} min. WebSocket
-            zbiera nowe oferty na bieżąco — pełny katalog wróci po odblokowaniu API.
+            Skinport REST zablokowany (429). Kolejna próba sync za{" "}
+            {spStatus.retryInSec >= 60
+              ? `~${Math.max(1, Math.ceil(spStatus.retryInSec / 60))} min`
+              : `${Math.max(1, spStatus.retryInSec)} s`}
+            . WebSocket zbiera pojedyncze oferty — pełny katalog wymaga
+            udanego syncu REST.
+          </div>
+        )}
+        {spStatus && spStatus.catalogItems === 0 && !spStatus.backoffActive && (
+          <div className="spinner warn">
+            Brak katalogu Skinport — trwa sync REST lub limit API (429). Odśwież
+            za chwilę; unikaj wielokrotnego restartu dev servera (limit 8 req / 5
+            min).
           </div>
         )}
         {spStatus && spStatus.catalogItems > 0 && (
@@ -381,6 +544,11 @@ export default function Home() {
                             </div>
                             <div className="muted qty">
                               {row.skinport.quantity} szt.
+                              {applied.priceMode === "avg" &&
+                                row.skinport.price !== null &&
+                                row.skinport.price !== row.skinport.normalizedPrice && (
+                                  <> · min {fmt(row.skinport.price, row.skinport.currency)}</>
+                                )}
                             </div>
                           </>
                         ) : (
@@ -395,7 +563,11 @@ export default function Home() {
                             </div>
                             <div className="muted qty">
                               {row.csfloat.quantity} szt. ·{" "}
-                              {fmt(row.csfloat.price, "USD")} orig.
+                              {fmt(row.csfloat.price, "USD")} USD min
+                              {applied.priceMode === "avg" &&
+                                csfloatAvgs[row.marketHashName] !== undefined && (
+                                  <> · śr. {applied.avgSampleSize} listingów</>
+                                )}
                             </div>
                           </>
                         ) : (
@@ -561,8 +733,9 @@ export default function Home() {
       )}
 
       <div className="footer">
-        Dane: Skinport REST API (refresh ~10 min) + CSFloat price-list (refresh ~1
-        min). UI odświeża się co 60 s. Ceny mają charakter orientacyjny.
+        Dane: Skinport REST API (PLN, refresh ~10 min) + CSFloat price-list /
+        listingi (refresh ~1 min). Waluta porównania: {CURRENCY}. Ceny mają
+        charakter orientacyjny — Skinport avg estymowane z min+mediana API.
       </div>
     </main>
   );

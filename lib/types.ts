@@ -58,11 +58,16 @@ export interface MarketAdapter {
 export interface MarketSnapshot {
   marketId: string;
   marketName: string;
+  /** Surowa najniższa cena z API (przed trybem avg). */
   price: number | null;
   currency: string;
+  /** Cena do porównania wg wybranego trybu (min / avg). */
   normalizedPrice: number | null;
   quantity: number;
   url: string | null;
+  /** Skinport: mediana / średnia z bulk API (do estymacji avg). */
+  medianPrice?: number | null;
+  meanPrice?: number | null;
 }
 
 /** Wiersz porównania arbitrażowego między marketami. */

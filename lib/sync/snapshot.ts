@@ -1,8 +1,8 @@
 // Buduje snapshot arbitrażu z bulk API Skinport + CSFloat.
-// Skinport odświeża się co 10 min, CSFloat co 1 min (TTL w adapterach).
+// Surowe dane — tryb ceny (min/avg) stosuje filterArbitrageSnapshot po stronie klienta.
 
 import { getCatalogItemCount } from "@/lib/skinport/catalog-store";
-import { DEFAULT_CURRENCY, USD_TO_DEFAULT_FX } from "@/lib/config";
+import { DEFAULT_CURRENCY } from "@/lib/config";
 import { getCsfloatPriceIndex } from "@/lib/markets/csfloat";
 import {
   fetchSkinportItems,
@@ -16,13 +16,14 @@ import {
   type ArbitrageQuery,
   type ArbitrageSort,
 } from "@/lib/sync/arbitrage-filter";
-import type { ArbitrageRow, ArbitrageSnapshot, MarketSnapshot } from "@/lib/types";
+import type { ArbitrageSnapshot } from "@/lib/types";
 
 export type { ArbitragePage, ArbitrageQuery, ArbitrageSort };
 export { filterArbitrageSnapshot };
 import { onArbitrageSnapshotInvalidate } from "@/lib/sync/invalidate";
+import { buildArbitrageRowFromRaw } from "@/lib/pricing";
 
-const SNAPSHOT_TTL_MS = 10 * 60 * 1000; // zgodnie z interwałem sync Skinport
+const SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 
 function csfloatSearchUrl(marketHashName: string): string {
   const params = new URLSearchParams({
@@ -31,29 +32,6 @@ function csfloatSearchUrl(marketHashName: string): string {
     type: "buy_now",
   });
   return `https://csfloat.com/search?${params}`;
-}
-
-function buildSpread(
-  a: number | null,
-  b: number | null,
-): { spread: number | null; spreadPct: number | null; cheaperOn: "skinport" | "csfloat" | null } {
-  if (a === null || b === null || a <= 0 || b <= 0) {
-    return { spread: null, spreadPct: null, cheaperOn: null };
-  }
-
-  const cheaperOn = a < b ? "skinport" : b < a ? "csfloat" : null;
-  const cheapest = Math.min(a, b);
-  const dearest = Math.max(a, b);
-
-  if (cheapest === dearest) {
-    return { spread: 0, spreadPct: 0, cheaperOn: null };
-  }
-
-  return {
-    spread: dearest - cheapest,
-    spreadPct: (dearest / cheapest - 1) * 100,
-    cheaperOn,
-  };
 }
 
 async function buildSnapshot(): Promise<ArbitrageSnapshot> {
@@ -79,60 +57,25 @@ async function buildSnapshot(): Promise<ArbitrageSnapshot> {
   for (const name of skinportMap.keys()) names.add(name);
   for (const name of csfloatIndex.keys()) names.add(name);
 
-  const rows: ArbitrageRow[] = [];
+  const rows = [];
 
   for (const marketHashName of names) {
     const sp = skinportMap.get(marketHashName);
     const cf = csfloatIndex.get(marketHashName);
 
-    const skinportNorm =
-      sp?.min_price !== null && sp?.min_price !== undefined && sp.min_price > 0
-        ? sp.min_price
-        : null;
-    const csfloatNorm =
-      cf && cf.min_price > 0
-        ? (cf.min_price / 100) *
-          (DEFAULT_CURRENCY === "USD" ? 1 : USD_TO_DEFAULT_FX)
-        : null;
+    const row = buildArbitrageRowFromRaw(
+      {
+        marketHashName,
+        skinportItem: sp ?? null,
+        csfloatMinCents: cf?.min_price,
+        csfloatQuantity: cf?.quantity,
+      },
+      { priceMode: "min", avgSampleSize: 1 },
+      csfloatSearchUrl,
+    );
 
-    const skinport: MarketSnapshot | null =
-      skinportNorm !== null
-        ? {
-            marketId: "skinport",
-            marketName: "Skinport",
-            price: sp!.min_price,
-            currency: sp!.currency || DEFAULT_CURRENCY,
-            normalizedPrice: skinportNorm,
-            quantity: sp!.quantity ?? 0,
-            url: sp!.item_page ?? null,
-          }
-        : null;
-
-    const csfloat: MarketSnapshot | null =
-      csfloatNorm !== null
-        ? {
-            marketId: "csfloat",
-            marketName: "CSFloat",
-            price: cf!.min_price / 100,
-            currency: "USD",
-            normalizedPrice: csfloatNorm,
-            quantity: cf!.quantity ?? 0,
-            url: csfloatSearchUrl(marketHashName),
-          }
-        : null;
-
-    if (!skinport && !csfloat) continue;
-
-    const { spread, spreadPct, cheaperOn } = buildSpread(skinportNorm, csfloatNorm);
-
-    rows.push({
-      marketHashName,
-      skinport,
-      csfloat,
-      spread,
-      spreadPct,
-      cheaperOn,
-    });
+    if (!row.skinport && !row.csfloat) continue;
+    rows.push(row);
   }
 
   const now = new Date().toISOString();
@@ -161,7 +104,6 @@ onArbitrageSnapshotInvalidate(() => {
 
 export { invalidateArbitrageSnapshot } from "@/lib/sync/invalidate";
 
-/** Zwraca snapshot z cache (odświeżany co ~10 min). */
 export async function getArbitrageSnapshot(): Promise<ArbitrageSnapshot> {
   ensureSkinportSyncWorkerStarted();
 
@@ -169,7 +111,6 @@ export async function getArbitrageSnapshot(): Promise<ArbitrageSnapshot> {
     return snapshotCache.value;
   }
 
-  // Podczas backoff Skinport nie przebudowuj — użyj ostatniego snapshotu.
   if (snapshotCache && isSkinportBackoffActive()) {
     return snapshotCache.value;
   }
@@ -197,7 +138,6 @@ export async function queryArbitrage(query: ArbitrageQuery): Promise<ArbitragePa
   return filterArbitrageSnapshot(snapshot, query, getSnapshotRefreshInSec());
 }
 
-/** Pozostały czas do odświeżenia snapshotu (sekundy). */
 export function getSnapshotRefreshInSec(): number {
   if (!snapshotCache) return 0;
   return Math.max(0, Math.ceil((snapshotCache.expiresAt - Date.now()) / 1000));

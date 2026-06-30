@@ -6,9 +6,8 @@
 import { cached } from "@/lib/cache";
 import {
   CSFLOAT_API_KEY,
-  DEFAULT_CURRENCY,
-  USD_TO_DEFAULT_FX,
 } from "@/lib/config";
+import { usdCentsToDefault } from "@/lib/pricing";
 import type { MarketAdapter, MarketPrice } from "@/lib/types";
 
 const LISTING_TTL_MS = 60 * 1000; // 1 minuta na zapytanie o konkretny item
@@ -40,8 +39,88 @@ function csfloatSearchUrl(marketHashName: string): string {
 }
 
 function normalizeCsfloatPrice(priceCents: number): number {
-  const priceUsd = priceCents / 100;
-  return DEFAULT_CURRENCY === "USD" ? priceUsd : priceUsd * USD_TO_DEFAULT_FX;
+  return usdCentsToDefault(priceCents);
+}
+
+function listingHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (CSFLOAT_API_KEY) headers["Authorization"] = CSFLOAT_API_KEY;
+  return headers;
+}
+
+async function fetchListingsRaw(
+  marketHashName: string,
+  limit: number,
+): Promise<CsfloatListing[]> {
+  const params = new URLSearchParams({
+    market_hash_name: marketHashName,
+    sort_by: "lowest_price",
+    type: "buy_now",
+    limit: String(limit),
+  });
+
+  const res = await fetch(`https://csfloat.com/api/v1/listings?${params}`, {
+    headers: listingHeaders(),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`CSFloat API ${res.status}`);
+
+  const data = await res.json();
+  return Array.isArray(data) ? data : data?.data ?? [];
+}
+
+/** Średnia ceny N najtańszych listingów buy_now (centy USD). */
+export async function fetchCsfloatAvgCheapest(
+  marketHashName: string,
+  sampleSize: number,
+): Promise<{ avgUsd: number; avgNorm: number; sampleCount: number } | null> {
+  const n = Math.min(20, Math.max(1, Math.floor(sampleSize)));
+  const key = `csfloat:avg:${n}:${marketHashName}`;
+  return cached(key, LISTING_TTL_MS, async () => {
+    const list = await fetchListingsRaw(marketHashName, n);
+    const prices = list
+      .map((l) => l.price)
+      .filter((p) => typeof p === "number" && p > 0)
+      .slice(0, n);
+    if (prices.length === 0) return null;
+
+    const avgCents = prices.reduce((a, b) => a + b, 0) / prices.length;
+    return {
+      avgUsd: avgCents / 100,
+      avgNorm: usdCentsToDefault(avgCents),
+      sampleCount: prices.length,
+    };
+  });
+}
+
+export async function fetchCsfloatAvgBatch(
+  names: string[],
+  sampleSize: number,
+): Promise<
+  Record<string, { avgUsd: number; avgNorm: number; sampleCount: number }>
+> {
+  const out: Record<
+    string,
+    { avgUsd: number; avgNorm: number; sampleCount: number }
+  > = {};
+  const chunkSize = 8;
+  for (let i = 0; i < names.length; i += chunkSize) {
+    const chunk = names.slice(i, i + chunkSize);
+    const results = await Promise.all(
+      chunk.map(async (name) => {
+        try {
+          const avg = await fetchCsfloatAvgCheapest(name, sampleSize);
+          return [name, avg] as const;
+        } catch {
+          return [name, null] as const;
+        }
+      }),
+    );
+    for (const [name, avg] of results) {
+      if (avg) out[name] = avg;
+    }
+  }
+  return out;
 }
 
 /** Pobiera (i cache'uje) indeks cen całego rynku CSFloat. */
@@ -78,24 +157,7 @@ async function fetchCheapestListing(
 ): Promise<CsfloatListing | null> {
   const key = `csfloat:cheapest:${marketHashName}`;
   return cached(key, LISTING_TTL_MS, async () => {
-    const params = new URLSearchParams({
-      market_hash_name: marketHashName,
-      sort_by: "lowest_price",
-      type: "buy_now",
-      limit: "1",
-    });
-    const headers: Record<string, string> = {};
-    if (CSFLOAT_API_KEY) headers["Authorization"] = CSFLOAT_API_KEY;
-
-    const res = await fetch(`https://csfloat.com/api/v1/listings?${params}`, {
-      headers,
-      cache: "no-store",
-    });
-    if (!res.ok) throw new Error(`CSFloat API ${res.status}`);
-
-    const data = await res.json();
-    // API może zwrócić tablicę lub obiekt { data: [...] } zależnie od wersji.
-    const list: CsfloatListing[] = Array.isArray(data) ? data : data?.data ?? [];
+    const list = await fetchListingsRaw(marketHashName, 1);
     return list.length > 0 ? list[0] : null;
   });
 }
