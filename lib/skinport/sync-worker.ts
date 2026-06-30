@@ -15,6 +15,7 @@ import { skinportGlobals } from "@/lib/skinport/globals";
 import { readSkinportMeta, writeSkinportMeta } from "@/lib/skinport/meta";
 import { startSkinportSaleFeed } from "@/lib/skinport/sale-feed";
 import { invalidateArbitrageSnapshot } from "@/lib/sync/invalidate";
+import { refreshUsdFxRate } from "@/lib/fx-rate";
 
 const TEN_MIN_MS = 10 * 60 * 1000;
 const SYNC_INTERVAL_MS = TEN_MIN_MS;
@@ -167,7 +168,7 @@ async function fetchFromSkinportApi(
   const params = new URLSearchParams({
     app_id: String(CS2_APP_ID),
     currency,
-    tradable: "0",
+    tradable: "1",
   });
   const res = await fetch(`https://api.skinport.com/v1/items?${params}`, {
     headers: { "Accept-Encoding": "br" },
@@ -268,6 +269,9 @@ export function startSkinportSyncWorker(
   if (g.workerStarted) return;
   g.workerStarted = true;
 
+  // Pobierz live kurs walutowy przy starcie, potem co 1h razem z sync.
+  void refreshUsdFxRate();
+
   void bootstrap(currency).then(() => {
     startSkinportSaleFeed(currency, () => {
       invalidateArbitrageSnapshot();
@@ -276,6 +280,7 @@ export function startSkinportSyncWorker(
 
   if (g.syncTimer) clearInterval(g.syncTimer);
   g.syncTimer = setInterval(() => {
+    void refreshUsdFxRate();
     void syncSkinportCatalog(currency);
   }, SYNC_INTERVAL_MS);
 }

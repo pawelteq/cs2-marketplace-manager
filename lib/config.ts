@@ -58,3 +58,30 @@ export const CSFLOAT_API_KEY = process.env.CSFLOAT_API_KEY || "";
 
 /** App ID gry — 730 to CS2 / CS:GO. */
 export const CS2_APP_ID = 730;
+
+/**
+ * Prowizja sprzedawcy na Skinport.
+ * Konto standardowe: 12%. Konto Pro (subskrypcja): 8%.
+ * Ustaw SKINPORT_SELLER_FEE=0.08 w .env jeśli masz subskrypcję.
+ */
+export const SKINPORT_SELLER_FEE = (() => {
+  const env = process.env.SKINPORT_SELLER_FEE;
+  if (env !== undefined && env !== "") {
+    const n = Number(env);
+    if (Number.isFinite(n) && n >= 0 && n < 1) return n;
+  }
+  return 0.12;
+})();
+
+/**
+ * Prowizja sprzedawcy na CSFloat.
+ * Standardowo: 2%.
+ */
+export const CSFLOAT_SELLER_FEE = (() => {
+  const env = process.env.CSFLOAT_SELLER_FEE;
+  if (env !== undefined && env !== "") {
+    const n = Number(env);
+    if (Number.isFinite(n) && n >= 0 && n < 1) return n;
+  }
+  return 0.02;
+})();

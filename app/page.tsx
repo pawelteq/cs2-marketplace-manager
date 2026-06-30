@@ -520,7 +520,8 @@ export default function Home() {
                   <th>Item</th>
                   <th>Skinport</th>
                   <th>CSFloat</th>
-                  <th>Spread</th>
+                  <th>Spread brutto</th>
+                  <th>Zysk netto</th>
                   <th>Taniej na</th>
                   <th></th>
                 </tr>
@@ -528,7 +529,7 @@ export default function Home() {
               <tbody>
                 {arbData.rows.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="muted empty-row">
+                    <td colSpan={7} className="muted empty-row">
                       Brak wyników dla wybranych filtrów.
                     </td>
                   </tr>
@@ -579,6 +580,20 @@ export default function Home() {
                           <>
                             <strong>{fmt(row.spread, arbData.currency)}</strong>
                             <div className="muted">{row.spreadPct.toFixed(1)}%</div>
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="spread-cell">
+                        {row.netSpread !== null && row.netSpreadPct !== null ? (
+                          <>
+                            <strong className={row.netSpread > 0 ? "net-profit" : "net-loss"}>
+                              {fmt(row.netSpread, arbData.currency)}
+                            </strong>
+                            <div className={`muted ${row.netSpreadPct > 0 ? "net-profit" : "net-loss"}`}>
+                              {row.netSpreadPct.toFixed(1)}%
+                            </div>
                           </>
                         ) : (
                           "—"

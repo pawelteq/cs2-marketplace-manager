@@ -78,6 +78,10 @@ export interface ArbitrageRow {
   spread: number | null;
   spreadPct: number | null;
   cheaperOn: "skinport" | "csfloat" | null;
+  /** Zysk netto po odliczeniu prowizji sprzedawcy (w walucie porównania). */
+  netSpread: number | null;
+  /** Zysk netto jako % ceny zakupu. */
+  netSpreadPct: number | null;
 }
 
 /** Pełny snapshot rynku do tabeli arbitrażu. */

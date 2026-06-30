@@ -1,6 +1,7 @@
 // Logika porównywania cen — PLN, najtańsza sztuka vs średnia N najtańszych.
 
-import { DEFAULT_CURRENCY, USD_TO_DEFAULT_FX } from "@/lib/config";
+import { DEFAULT_CURRENCY, SKINPORT_SELLER_FEE, CSFLOAT_SELLER_FEE } from "@/lib/config";
+import { getCachedUsdFx } from "@/lib/fx-rate";
 import type { SkinportItem } from "@/lib/markets/skinport-types";
 import type { ArbitrageRow, MarketSnapshot } from "@/lib/types";
 
@@ -28,7 +29,7 @@ export function clampSampleSize(value: number): number {
 
 export function usdCentsToDefault(cents: number): number {
   const usd = cents / 100;
-  return DEFAULT_CURRENCY === "USD" ? usd : usd * USD_TO_DEFAULT_FX;
+  return DEFAULT_CURRENCY === "USD" ? usd : usd * getCachedUsdFx();
 }
 
 /** Skinport bulk API — estymacja średniej N najtańszych z min + mediana. */
@@ -85,9 +86,11 @@ export function buildSpread(
   spread: number | null;
   spreadPct: number | null;
   cheaperOn: "skinport" | "csfloat" | null;
+  netSpread: number | null;
+  netSpreadPct: number | null;
 } {
   if (a === null || b === null || a <= 0 || b <= 0) {
-    return { spread: null, spreadPct: null, cheaperOn: null };
+    return { spread: null, spreadPct: null, cheaperOn: null, netSpread: null, netSpreadPct: null };
   }
 
   const cheaperOn = a < b ? "skinport" : b < a ? "csfloat" : null;
@@ -95,13 +98,21 @@ export function buildSpread(
   const dearest = Math.max(a, b);
 
   if (cheapest === dearest) {
-    return { spread: 0, spreadPct: 0, cheaperOn: null };
+    return { spread: 0, spreadPct: 0, cheaperOn: null, netSpread: 0, netSpreadPct: 0 };
   }
+
+  // Prowizja sprzedawcy zależy od strony, na której SPRZEDAJEMY (droższy market).
+  const sellerFee = cheaperOn === "skinport" ? CSFLOAT_SELLER_FEE : SKINPORT_SELLER_FEE;
+  const netSale = dearest * (1 - sellerFee);
+  const netSpread = netSale - cheapest;
+  const netSpreadPct = (netSpread / cheapest) * 100;
 
   return {
     spread: dearest - cheapest,
     spreadPct: (dearest / cheapest - 1) * 100,
     cheaperOn,
+    netSpread,
+    netSpreadPct,
   };
 }
 
@@ -155,7 +166,7 @@ export function buildArbitrageRowFromRaw(
         }
       : null;
 
-  const { spread, spreadPct, cheaperOn } = buildSpread(skinportNorm, csfloatNorm);
+  const { spread, spreadPct, cheaperOn, netSpread, netSpreadPct } = buildSpread(skinportNorm, csfloatNorm);
 
   return {
     marketHashName: input.marketHashName,
@@ -164,6 +175,8 @@ export function buildArbitrageRowFromRaw(
     spread,
     spreadPct,
     cheaperOn,
+    netSpread,
+    netSpreadPct,
   };
 }
 

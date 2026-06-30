@@ -313,6 +313,14 @@ tr:last-child td {
   color: var(--good);
 }
 
+.net-profit {
+  color: var(--good);
+}
+
+.net-loss {
+  color: var(--bad);
+}
+
 .csfloat-tag {
   color: var(--accent-2);
   border-color: var(--accent-2);

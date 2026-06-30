@@ -151,10 +151,20 @@ export function applySoldSale(sale: SaleFeedSale, currency: string): boolean {
   if (!existing) return false;
 
   const quantity = Math.max(0, existing.quantity - 1);
+  const soldPrice = sale.salePrice / 100;
+
+  // Jeśli sprzedana sztuka miała cenę <= min_price, nie znamy nowej min_price
+  // (mogła to być jedyna najtańsza sztuka). Ustawiamy null — snapshot zostanie
+  // odświeżony przy kolejnym pełnym syncu lub listed event.
+  const minPriceStale =
+    existing.min_price !== null &&
+    existing.min_price > 0 &&
+    soldPrice <= existing.min_price;
+
   state.items.set(sale.marketHashName, {
     ...existing,
     quantity,
-    min_price: quantity === 0 ? null : existing.min_price,
+    min_price: quantity === 0 || minPriceStale ? null : existing.min_price,
   });
   state.loadedAt = Date.now();
   return true;
