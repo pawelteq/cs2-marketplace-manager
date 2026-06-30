@@ -5,7 +5,7 @@ import type { ArbitrageRow, ArbitrageSnapshot, ComparisonResult, SearchHit } fro
 import { filterArbitrageSnapshot, listCsfloatAvgCandidates, type ArbitragePage } from "@/lib/sync/arbitrage-filter";
 import type { PriceMode } from "@/lib/pricing";
 
-const CURRENCY = process.env.NEXT_PUBLIC_DEFAULT_CURRENCY || "EUR";
+const CURRENCY = process.env.NEXT_PUBLIC_DEFAULT_CURRENCY || "PLN";
 const CLIENT_REFRESH_MS = 60_000;
 
 function fmt(value: number | null, currency: string): string {
