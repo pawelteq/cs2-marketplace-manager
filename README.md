@@ -8,14 +8,15 @@ marketów (Buff, DMarket, itp.).
 ## Stack
 
 - **Next.js 15** (App Router) + **React 19**
-- **TypeScript**
-- Brak dodatkowych zależności runtime — czyste API marketów + warstwa cache w pamięci
+- **TypeScript**, **socket.io-client** (Skinport WebSocket Sale Feed)
+- Warstwa cache w pamięci + `.cache/` na dysku (Skinport)
 
 ## Uruchomienie
 
 ```bash
 npm install
 cp .env.example .env        # ustaw walutę i kurs USD
+npm run sync:skinport       # opcjonalnie: pierwszy sync katalogu Skinport
 npm run dev                 # http://localhost:3000
 ```
 
@@ -34,17 +35,36 @@ app/
   api/
     search/route.ts     # GET /api/search?q=  — autocomplete (katalog Skinport)
     compare/route.ts    # GET /api/compare?name= — porównanie cen na marketach
-  page.tsx              # interfejs porównywarki
+    arbitrage/route.ts  # GET /api/arbitrage — tabela arbitrażu (bulk snapshot)
+  page.tsx              # tabela arbitrażu + porównywarka pojedynczego itemu
   layout.tsx, globals.css
 lib/
-  types.ts              # MarketPrice, ComparisonResult, MarketAdapter, SearchHit
+  types.ts              # MarketPrice, ComparisonResult, ArbitrageRow, …
   config.ts             # konfiguracja z ENV
   cache.ts              # cache w pamięci z TTL + dedup równoległych zapytań
+  sync/
+    snapshot.ts         # join Skinport + CSFloat
+    invalidate.ts       # unieważnianie cache snapshotu
+  skinport/
+    sync-worker.ts      # REST sync co 10 min (jedyny moduł wołający Skinport API)
+    sale-feed.ts        # WebSocket live (listed/sold)
+    catalog-store.ts    # katalog w pamięci + zapis .cache/
   markets/
-    skinport.ts         # adapter Skinport (/v1/items, cache 5 min)
-    csfloat.ts          # adapter CSFloat (/api/v1/listings, ceny w centach USD)
+    skinport.ts         # adapter odczytu z lokalnego katalogu
+    csfloat.ts          # adapter CSFloat (price-list cache 1 min)
     index.ts            # rejestr marketów + compareItem()
+instrumentation.ts      # start worker Skinport przy starcie serwera
+scripts/sync-skinport.ts # ręczny sync: npm run sync:skinport
 ```
+
+### Odświeżanie danych
+
+| Źródło | Mechanizm | Interwał |
+| --- | --- | --- |
+| Skinport katalog | Worker REST `/v1/items` | co 10 min (1 req) |
+| Skinport live | WebSocket Sale Feed | eventy listed/sold |
+| CSFloat | `/api/v1/listings/price-list` | cache 1 min |
+| UI (polling) | `/api/arbitrage` | co 60 s (tylko odczyt cache) |
 
 ### Jak dodać nowy market
 
@@ -55,10 +75,9 @@ lib/
 
 ## Uwagi o API
 
-- **Skinport** `/v1/items`: bez autoryzacji, cache 5 min, limit 8 req / 5 min.
-  Pobieramy całą listę raz i trzymamy w cache; wyszukiwanie odbywa się lokalnie.
-- **CSFloat** `/api/v1/listings`: ceny w **centach USD**; filtrujemy po
-  `market_hash_name`, sortujemy po `lowest_price`.
+- **Skinport** `/v1/items`: odpytywany **wyłącznie przez worker** (`lib/skinport/sync-worker.ts`),
+  max 1× co 10 min. UI i filtry czytają lokalny katalog. Live update przez WebSocket Sale Feed.
+- **CSFloat** `/api/v1/listings/price-list`: indeks ~26k itemów, cache 1 min.
 
 ## Roadmap (narzędzia do akcji)
 

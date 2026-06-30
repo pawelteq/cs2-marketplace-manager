@@ -13,11 +13,14 @@ const store = new Map<string, Entry<unknown>>();
 export function cacheGet<T>(key: string): T | undefined {
   const entry = store.get(key);
   if (!entry) return undefined;
-  if (Date.now() > entry.expiresAt) {
-    store.delete(key);
-    return undefined;
-  }
+  if (Date.now() > entry.expiresAt) return undefined;
   return entry.value as T;
+}
+
+/** Zwraca ostatnią wartość z cache nawet po wygaśnięciu TTL (fallback przy błędach API). */
+export function cacheGetStale<T>(key: string): T | undefined {
+  const entry = store.get(key);
+  return entry ? (entry.value as T) : undefined;
 }
 
 /** Zapisuje wartość z czasem życia (ttlMs). */
@@ -47,6 +50,10 @@ export async function cached<T>(
       const value = await loader();
       cacheSet(key, value, ttlMs);
       return value;
+    } catch (e) {
+      const stale = cacheGetStale<T>(key);
+      if (stale !== undefined) return stale;
+      throw e;
     } finally {
       inflight.delete(key);
     }

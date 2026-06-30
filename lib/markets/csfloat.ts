@@ -12,6 +12,13 @@ import {
 import type { MarketAdapter, MarketPrice } from "@/lib/types";
 
 const LISTING_TTL_MS = 60 * 1000; // 1 minuta na zapytanie o konkretny item
+const PRICE_LIST_TTL_MS = 60 * 1000; // 1 minuta — indeks całego rynku
+
+interface CsfloatPriceListItem {
+  market_hash_name: string;
+  quantity: number;
+  min_price: number; // centy USD
+}
 
 interface CsfloatListing {
   id: string;
@@ -21,6 +28,49 @@ interface CsfloatListing {
   item: {
     market_hash_name: string;
   };
+}
+
+function csfloatSearchUrl(marketHashName: string): string {
+  const params = new URLSearchParams({
+    market_hash_name: marketHashName,
+    sort_by: "lowest_price",
+    type: "buy_now",
+  });
+  return `https://csfloat.com/search?${params}`;
+}
+
+function normalizeCsfloatPrice(priceCents: number): number {
+  const priceUsd = priceCents / 100;
+  return DEFAULT_CURRENCY === "USD" ? priceUsd : priceUsd * USD_TO_DEFAULT_FX;
+}
+
+/** Pobiera (i cache'uje) indeks cen całego rynku CSFloat. */
+export async function fetchCsfloatPriceList(): Promise<CsfloatPriceListItem[]> {
+  const key = "csfloat:price-list";
+  return cached(key, PRICE_LIST_TTL_MS, async () => {
+    const headers: Record<string, string> = {};
+    if (CSFLOAT_API_KEY) headers["Authorization"] = CSFLOAT_API_KEY;
+
+    const res = await fetch("https://csfloat.com/api/v1/listings/price-list", {
+      headers,
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`CSFloat price-list ${res.status}`);
+    return (await res.json()) as CsfloatPriceListItem[];
+  });
+}
+
+/** Mapa market_hash_name -> wpis z price-list. */
+export async function getCsfloatPriceIndex(): Promise<
+  Map<string, CsfloatPriceListItem>
+> {
+  const key = "csfloat:price-index";
+  return cached(key, PRICE_LIST_TTL_MS, async () => {
+    const items = await fetchCsfloatPriceList();
+    const map = new Map<string, CsfloatPriceListItem>();
+    for (const it of items) map.set(it.market_hash_name, it);
+    return map;
+  });
 }
 
 async function fetchCheapestListing(
@@ -55,6 +105,22 @@ export const csfloatAdapter: MarketAdapter = {
   name: "CSFloat",
   async getCheapest(marketHashName: string): Promise<MarketPrice> {
     try {
+      const index = await getCsfloatPriceIndex();
+      const indexed = index.get(marketHashName);
+      if (indexed && indexed.min_price > 0) {
+        const priceUsd = indexed.min_price / 100;
+        return {
+          marketId: "csfloat",
+          marketName: "CSFloat",
+          price: priceUsd,
+          currency: "USD",
+          normalizedPrice: normalizeCsfloatPrice(indexed.min_price),
+          quantity: indexed.quantity,
+          url: csfloatSearchUrl(marketHashName),
+          ok: true,
+        };
+      }
+
       const listing = await fetchCheapestListing(marketHashName);
       if (!listing) {
         return {
@@ -68,14 +134,14 @@ export const csfloatAdapter: MarketAdapter = {
           ok: true,
         };
       }
-      const priceUsd = listing.price / 100; // centy -> dolary
+      const priceUsd = listing.price / 100;
       return {
         marketId: "csfloat",
         marketName: "CSFloat",
         price: priceUsd,
         currency: "USD",
-        normalizedPrice:
-          DEFAULT_CURRENCY === "USD" ? priceUsd : priceUsd * USD_TO_DEFAULT_FX,
+        normalizedPrice: normalizeCsfloatPrice(listing.price),
+        quantity: null,
         url: `https://csfloat.com/item/${listing.id}`,
         ok: true,
       };

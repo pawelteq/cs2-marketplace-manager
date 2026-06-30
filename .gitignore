@@ -2,6 +2,7 @@
 /node_modules
 /.pnp
 .pnp.js
+.pnp.loader.mjs
 
 # next.js
 /.next/
@@ -9,20 +10,49 @@
 
 # production
 /build
+/dist
 
-# misc
-.DS_Store
-*.pem
+# runtime cache (Skinport katalog, meta syncu — generowane lokalnie)
+.cache/
 
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# env
+# env — nigdy nie commituj sekretów; .env.example zostaje w repo
 .env
-.env*.local
+.env.*
+!.env.example
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# test / coverage
+/coverage
+
+# vercel & turbo
+.vercel
+.turbo
+
+# debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# IDE / edytory (ustawienia osobiste)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Cursor (cache sesji, nie potrzebne współpracownikowi)
+.cursor/
+
+# certs / klucze
+*.pem

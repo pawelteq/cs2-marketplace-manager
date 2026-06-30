@@ -53,3 +53,37 @@ export interface MarketAdapter {
   /** Zwraca najtańszą ofertę dla danej nazwy itemu (market_hash_name). */
   getCheapest(marketHashName: string): Promise<MarketPrice>;
 }
+
+/** Snapshot ceny z jednego marketu dla danego itemu. */
+export interface MarketSnapshot {
+  marketId: string;
+  marketName: string;
+  price: number | null;
+  currency: string;
+  normalizedPrice: number | null;
+  quantity: number;
+  url: string | null;
+}
+
+/** Wiersz porównania arbitrażowego między marketami. */
+export interface ArbitrageRow {
+  marketHashName: string;
+  skinport: MarketSnapshot | null;
+  csfloat: MarketSnapshot | null;
+  spread: number | null;
+  spreadPct: number | null;
+  cheaperOn: "skinport" | "csfloat" | null;
+}
+
+/** Pełny snapshot rynku do tabeli arbitrażu. */
+export interface ArbitrageSnapshot {
+  rows: ArbitrageRow[];
+  currency: string;
+  lastUpdatedAt: string;
+  skinportUpdatedAt: string;
+  csfloatUpdatedAt: string;
+  totalItems: number;
+  bothMarketsCount: number;
+  skinportAvailable: boolean;
+  warnings: string[];
+}
